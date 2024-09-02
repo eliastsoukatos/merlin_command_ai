@@ -8,31 +8,17 @@ from ai_response import get_ai_response
 from text_to_speech import text_to_speech_stream
 from wake_word import initialize_wake_word_detection, detect_wake_word
 
-async def process_and_play_response(transcription, speech_end_time, config):
-    """
-    Process the transcription, get AI response, convert to speech, and play it.
-    
-    Args:
-    transcription (str): The transcribed user input
-    speech_end_time (float): The time when the user finished speaking
-    config (dict): Configuration parameters
-    
-    Returns:
-    None
-    """
-    # Get AI response based on the transcribed text
-    ai_response = await asyncio.to_thread(get_ai_response, transcription, config)
+async def process_and_play_response(transcription, speech_end_time):
+    # Get AI response
+    ai_response = await asyncio.to_thread(get_ai_response, transcription)
     print(f"AI Response: {ai_response}")
     
-    # Convert the AI response to speech
-    audio_stream = await text_to_speech_stream(ai_response, config)
-    
-    # Play the audio stream and get the playback start time
+    # Convert text to speech and play audio
+    audio_stream = await text_to_speech_stream(ai_response)
     playback_start_time = await play_audio_stream(audio_stream)
     
-    # Calculate and print the response time (from end of user speech to start of AI response playback)
     response_time = playback_start_time - speech_end_time
-    print(f"Response time: {response_time:.2f} seconds")
+    print(f"Response time (from end of speech to start of playback): {response_time:.2f} seconds")
 
 async def simulate_interaction(question, config):
     """
@@ -101,7 +87,7 @@ async def main():
                 print(f"Transcription: {transcription}")
                 
                 # Process the transcription and play the response
-                await process_and_play_response(transcription, speech_end_time, config)
+                await process_and_play_response(transcription, speech_end_time)
                 
                 print("Waiting for wake word...")
 

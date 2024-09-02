@@ -1,24 +1,23 @@
+import os
 from elevenlabs import VoiceSettings
 from elevenlabs.client import ElevenLabs
+from dotenv import load_dotenv
 
-async def text_to_speech_stream(text, config):
-    """
-    Convert text to speech using ElevenLabs API.
-    """
-    # Initialize the ElevenLabs client with the API key
-    client = ElevenLabs(api_key=config['ELEVEN_LABS_API_KEY'])
-    
-    # Use ElevenLabs' text-to-speech API to convert text to speech
-    audio_stream = client.text_to_speech.convert_as_stream(
-        voice_id=config['VOICE_ID'],  # Use the specified voice ID
-        optimize_streaming_latency=config['OPTIMIZE_STREAMING_LATENCY'],
-        output_format="mp3_44100_128",  # Set the output audio format
+
+load_dotenv()
+
+# Initialize Eleven Labs client
+eleven_labs_client = ElevenLabs(api_key=os.getenv('ELEVEN_LABS_API_KEY'))
+
+async def text_to_speech_stream(text):
+    audio_stream = eleven_labs_client.text_to_speech.convert_as_stream(
+        voice_id="pMsXgVXv3BLzUgSXRplE",  # You can change this to your preferred voice
+        optimize_streaming_latency="0",
+        output_format="mp3_44100_128",
         text=text,
         voice_settings=VoiceSettings(
-            stability=config['VOICE_STABILITY'],
-            similarity_boost=config['VOICE_SIMILARITY_BOOST'],
+            stability=0.5,
+            similarity_boost=0.5,
         ),
     )
-    
-    # Return the audio stream
     return audio_stream

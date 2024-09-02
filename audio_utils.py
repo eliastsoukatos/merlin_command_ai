@@ -5,6 +5,10 @@ import sounddevice as sd
 import numpy as np
 from pydub import AudioSegment
 import io
+import pyaudio
+import asyncio
+from pydub.playback import play
+from io import BytesIO
 
 def record_audio(stream, pa, config, cobra):
     """
@@ -55,25 +59,21 @@ def record_audio(stream, pa, config, cobra):
     return "temp_audio.wav", last_voice_time
 
 async def play_audio_stream(stream):
-    """
-    Play an audio stream using sounddevice.
-    """
-    # Read the entire stream into a buffer
     buffer = io.BytesIO()
+    playback_start_time = None
+
     for chunk in stream:
         buffer.write(chunk)
 
     buffer.seek(0)
-    
-    # Convert the buffer to an AudioSegment
     audio = AudioSegment.from_mp3(buffer)
     playback_start_time = time.time()
     
-    # Convert the AudioSegment to a numpy array
+    # Convert to numpy array
     samples = np.array(audio.get_array_of_samples())
     
-    # Play the audio using sounddevice
+    # Play audio
     sd.play(samples, audio.frame_rate)
-    sd.wait()  # Wait until the audio playback is finished
+    sd.wait()
 
     return playback_start_time
