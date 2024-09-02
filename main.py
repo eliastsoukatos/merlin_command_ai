@@ -1,24 +1,19 @@
+# External libraries
+
 import asyncio
 import argparse
 import time
-from config import load_config
-from audio_utils import record_audio, play_audio_stream
-from transcription import transcribe_audio
-from ai_response import get_ai_response
-from text_to_speech import text_to_speech_stream
-from wake_word import initialize_wake_word_detection, detect_wake_word
 
-async def process_and_play_response(transcription, speech_end_time):
-    # Get AI response
-    ai_response = await asyncio.to_thread(get_ai_response, transcription)
-    print(f"AI Response: {ai_response}")
-    
-    # Convert text to speech and play audio
-    audio_stream = await text_to_speech_stream(ai_response)
-    playback_start_time = await play_audio_stream(audio_stream)
-    
-    response_time = playback_start_time - speech_end_time
-    print(f"Response time (from end of speech to start of playback): {response_time:.2f} seconds")
+# Internal files
+
+from config import load_config
+from audio_utils import record_audio
+from transcription import transcribe_audio
+from wake_word import initialize_wake_word_detection, detect_wake_word
+from response_processor import process_and_play_response
+
+
+# Simulate interaction
 
 async def simulate_interaction(question, config):
     """
@@ -35,6 +30,9 @@ async def simulate_interaction(question, config):
     speech_end_time = asyncio.get_event_loop().time()
     await process_and_play_response(question, speech_end_time, config)
     print("Simulation complete. Press 'w' to simulate wake word, or 'q' to quit.")
+
+
+# Main software
 
 async def main():
     # Set up command-line argument parsing
