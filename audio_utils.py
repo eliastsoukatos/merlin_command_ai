@@ -58,6 +58,10 @@ def record_audio(stream, pa, config, cobra):
     
     return "temp_audio.wav", last_voice_time
 
+
+# Uncomment for using Elevenlabs
+
+'''
 async def play_audio_stream(stream):
     buffer = io.BytesIO()
     playback_start_time = None
@@ -75,5 +79,33 @@ async def play_audio_stream(stream):
     # Play audio
     sd.play(samples, audio.frame_rate)
     sd.wait()
+
+    return playback_start_time
+'''
+
+
+# Comment for using openai
+
+async def play_audio_stream(stream):
+    buffer = io.BytesIO()
+    playback_start_time = None
+
+    if hasattr(stream, '__aiter__'):  # Check if it's an async iterator
+        async for chunk in stream:
+            buffer.write(chunk)
+    else:  # It's a regular generator
+        for chunk in stream:
+            buffer.write(chunk)
+
+    buffer.seek(0)
+    audio = AudioSegment.from_mp3(buffer)
+    playback_start_time = time.time()
+    
+    # Convert to numpy array
+    samples = np.array(audio.get_array_of_samples())
+    
+    # Play audio
+    sd.play(samples, audio.frame_rate)
+    await asyncio.to_thread(sd.wait)  # Use asyncio.to_thread for potentially blocking operations
 
     return playback_start_time
