@@ -20,13 +20,18 @@ active_reasoning = {}
 
 async def search_files(query, vector_store="default"):
     """Execute file search using the file search manager"""
+    print(f"Searching for files with query: '{query}' in vector store '{vector_store}'")
     result = file_search_manager.search(query, vector_store)
     if "error" in result:
+        print(f"Search error: {result['error']}")
         return f"Error searching for files: {result['error']}"
     
     if "response" in result and hasattr(result["response"], "text"):
-        return result["response"].text
+        response_text = result["response"].text
+        print(f"Search results: {response_text[:100]}...")
+        return response_text
     
+    print("No search results found")
     return "No results found."
 
 async def run_reasoning_chain(query):
@@ -384,14 +389,19 @@ When searching for files or information within indexed directories, use the file
     
     # Handle function calls
     if response_message.tool_calls:
-        # Add the assistant's message with the tool calls
-        conversation_history.append({"role": "assistant", "content": None, "tool_calls": response_message.tool_calls})
+        # Add the assistant's message with the tool calls to both conversation history and current messages
+        assistant_message = {"role": "assistant", "content": None, "tool_calls": response_message.tool_calls}
+        conversation_history.append(assistant_message)
+        messages.append(assistant_message)
+        
+        tool_responses = []
         
         # Process each tool call
         for tool_call in response_message.tool_calls:
             if tool_call.function:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
+                output = ""
                 
                 if function_name == "execute_commands":
                     commands = function_args["commands"]
@@ -401,20 +411,23 @@ When searching for files or information within indexed directories, use the file
                         output = await execute_background_command(commands[0])
                     else:
                         output = await execute_commands(commands)
-                    
-                    conversation_history.append({"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": output})
                 
                 elif function_name == "search_files":
                     query = function_args["query"]
                     vector_store = function_args.get("vector_store", "default")
                     
                     output = await search_files(query, vector_store)
-                    conversation_history.append({"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": output})
+                
+                # Create the tool response and add it to both conversation history and current messages
+                tool_response = {"role": "tool", "tool_call_id": tool_call.id, "name": function_name, "content": output}
+                conversation_history.append(tool_response)
+                messages.append(tool_response)
+                tool_responses.append(tool_response)
         
-        # Get the final response
+        # Get the final response based on the updated messages that include tool calls and responses
         final_response = await client.chat.completions.create(
             model="gpt-4o",
-            messages=messages + conversation_history[-2:]  # Add the tool call and tool response
+            messages=messages
         )
         assistant_response = final_response.choices[0].message.content
     else:

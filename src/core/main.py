@@ -44,6 +44,7 @@ async def main():
     parser.add_argument("--simulate", action="store_true", help="Run in simulation mode")
     parser.add_argument("--use-wake-word", action="store_true", help="Run with wake word detection (requires Picovoice)")
     parser.add_argument("--multi-step", action="store_true", help="Enable multi-step reasoning for complex tasks")
+    parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech output")
     args = parser.parse_args()
 
     # Load configuration from .env file
@@ -53,6 +54,11 @@ async def main():
     config['MULTI_STEP_REASONING'] = args.multi_step
     if args.multi_step:
         print("Multi-step reasoning enabled. Complex tasks will be processed in steps.")
+        
+    # Add no-tts option to config
+    config['NO_TTS'] = args.no_tts
+    if args.no_tts:
+        print("Text-to-speech output disabled.")
 
     if args.simulate:
         # Simulation mode: use predefined questions instead of audio input

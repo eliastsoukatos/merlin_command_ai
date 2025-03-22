@@ -329,7 +329,7 @@ class FileSearchManager:
         except Exception as e:
             return {"error": f"Failed to index directory: {str(e)}"}
     
-    def search(self, query: str, vector_store_name: str, max_results: int = 5) -> Dict:
+    def search(self, query: str, vector_store_name: str = "default", max_results: int = 5) -> Dict:
         """
         Search in a vector store
         
@@ -342,10 +342,35 @@ class FileSearchManager:
             Search results
         """
         try:
+            # If we don't have any vector stores, try to index the home directory or Documents
+            if not self.vector_stores:
+                print(f"No vector stores found, trying to create one...")
+                
+                # Try to index user's Documents directory first, then home directory as fallback
+                docs_dir = os.path.expanduser("~/Documents")
+                home_dir = os.path.expanduser("~")
+                
+                target_dir = docs_dir if os.path.exists(docs_dir) else home_dir
+                print(f"Auto-indexing directory: {target_dir}")
+                
+                # Create default vector store with this directory
+                self.create_vector_store("default")
+                
+                # Index the directory
+                index_result = self.index_directory(target_dir, "default")
+                if "error" in index_result:
+                    return {"error": f"Failed to create index: {index_result['error']}"}
+                
             # Get vector store ID
             if vector_store_name not in self.vector_stores:
-                return {"error": f"Vector store not found: {vector_store_name}"}
+                available_stores = list(self.vector_stores.keys())
+                vector_store_name = available_stores[0] if available_stores else "default"
+                print(f"Specified vector store not found, using: {vector_store_name}")
             
+            # Ensure the vector store exists
+            if vector_store_name not in self.vector_stores:
+                return {"error": f"No vector stores available. Please index a directory first."}
+                
             vector_store_id = self.vector_stores[vector_store_name]["id"]
             
             # For testing, we'll simulate a search response
@@ -363,9 +388,10 @@ class FileSearchManager:
             # For now, we'll do a simple substring search in the index
             results = []
             
-            # Find directory that was indexed
-            if directories:
-                directory_path = directories[0]
+            # Find directories that were indexed
+            searched_dirs = []
+            for directory_path in directories:
+                searched_dirs.append(directory_path)
                 dir_index = directory_indexer.get_directory_index(directory_path)
                 
                 if dir_index and "files" in dir_index:
@@ -387,11 +413,25 @@ class FileSearchManager:
                                 "size": file["size"],
                                 "modified": file["modified"]
                             })
-                            
-                    # If no results found by filename, try searching within directories too
+                    
+                    # If still no results, try searching in file paths
                     if not results:
-                        for directory in dir_index["directories"]:
-                            if query_lower in directory["path"].lower():
+                        for file in dir_index["files"]:
+                            file_path = file["path"].lower()
+                            if query_lower in file_path:
+                                print(f"Found path match: {file['path']}")
+                                results.append({
+                                    "name": file["name"],
+                                    "path": file["path"],
+                                    "category": file["category"],
+                                    "size": file["size"],
+                                    "modified": file["modified"]
+                                })
+                            
+                    # If no results found by filename or path, try searching within directories too
+                    if not results:
+                        for directory in dir_index.get("directories", []):
+                            if query_lower in directory.get("path", "").lower():
                                 # Get files in this matching directory
                                 parent_path = directory["path"]
                                 for file in dir_index["files"]:
@@ -404,19 +444,23 @@ class FileSearchManager:
                                             "modified": file["modified"]
                                         })
             
+            # If we have no indexed directories at all, return an error
+            if not searched_dirs:
+                return {"error": "No directories have been indexed for searching. Please index a directory first."}
+                
             # Create a mock response object
             # Create a custom result object that can be displayed
             result_text = ""
             if results:
                 result_text = f"I found {len(results)} files related to '{query}':\n\n"
-                for i, res in enumerate(results[:5], 1):
+                for i, res in enumerate(results[:max_results], 1):
                     result_text += f"{i}. {res['name']} ({res['category']})\n"
                     result_text += f"   Located at: {res['path']}\n"
                     result_text += f"   Size: {res['size']} bytes, Modified: {res['modified']}\n\n"
             else:
                 result_text = f"I couldn't find any files related to '{query}' in your indexed directories.\n"
                 result_text += f"The following directories were searched:\n"
-                for d in directories:
+                for d in searched_dirs:
                     result_text += f"- {d}\n"
             
             # Print the results directly for command-line use
@@ -443,10 +487,12 @@ class FileSearchManager:
             return {
                 "success": True,
                 "response": response,
-                "vector_store_name": vector_store_name
+                "vector_store_name": vector_store_name,
+                "files": results
             }
             
         except Exception as e:
+            print(f"Search error: {str(e)}")
             return {"error": f"Search failed: {str(e)}"}
     
     def get_indexed_directories(self, vector_store_name: Optional[str] = None) -> List[str]:

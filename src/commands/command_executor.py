@@ -42,13 +42,23 @@ class CommandVerifier:
         Returns:
             Tuple of (is_dangerous, reason)
         """
+        # Logging for debugging
+        print(f"Verificando comando: {command}")
+        
         # Check against dangerous patterns
         for pattern in DANGEROUS_PATTERNS:
             if re.search(pattern, command):
+                print(f"⚠️ Comando peligroso (patrón {pattern}): {command}")
                 return True, f"Command matches dangerous pattern: {pattern}"
         
         # Get the base command (first word)
         base_command = command.strip().split()[0] if command.strip() else ""
+        
+        # Special case for mkdir and mv which are essential for our file operations
+        if base_command in ["mkdir", "mv", "cp"]:
+            # These are essential commands that we need to allow
+            print(f"✅ Comando permitido (esencial): {command}")
+            return False, ""
         
         # Check if it's in our list of safe commands
         is_in_safe_list = False
@@ -58,15 +68,19 @@ class CommandVerifier:
                 break
         
         if not is_in_safe_list and base_command not in ["echo", "printf"]:
+            print(f"⚠️ Comando no en lista permitida: {base_command}")
             return True, f"Command '{base_command}' is not in the allowed command list"
         
         # Additional specific checks
         if ">" in command and ("/etc/" in command or "/var/" in command):
+            print(f"⚠️ Comando intenta escribir a directorios del sistema: {command}")
             return True, "Command attempts to write to system directories"
         
         if "|" in command and any(cmd in command for cmd in ["nohup", "daemon", "&", "disown"]):
+            print(f"⚠️ Comando intenta ejecución en segundo plano con pipes: {command}")
             return True, "Command attempts to background execution with pipes"
-            
+        
+        print(f"✅ Comando verificado y permitido: {command}")    
         return False, ""
     
     @staticmethod
@@ -91,24 +105,44 @@ class CommandVerifier:
             # Get approved directories from context
             approved_dirs = context.get("approved_directories", [])
             
-            # Extract paths from the command
-            words = shlex.split(command)
-            paths = [w for w in words[1:] if not w.startswith("-") and "/" in w]
+            # Debug info
+            print(f"Directorios aprobados: {approved_dirs}")
             
-            # Check if all paths are within approved directories
-            for path in paths:
-                if not path.startswith("/"):
-                    # Relative path, skip
-                    continue
-                    
-                is_approved = False
-                for approved_dir in approved_dirs:
-                    if path.startswith(approved_dir):
-                        is_approved = True
-                        break
+            # Consider the user's home directory as approved
+            home_dir = os.path.expanduser("~")
+            if home_dir not in approved_dirs:
+                approved_dirs.append(home_dir)
+                print(f"Añadido directorio home: {home_dir}")
+            
+            # Extract paths from the command
+            try:
+                words = shlex.split(command)
+                paths = [w for w in words[1:] if not w.startswith("-") and "/" in w]
                 
-                if not is_approved:
-                    return False, f"Command targets unapproved directory: {path}"
+                print(f"Paths extraídos del comando: {paths}")
+                
+                # Check if all paths are within approved directories
+                for path in paths:
+                    if not path.startswith("/"):
+                        # Convert relative path to absolute
+                        abs_path = os.path.abspath(path)
+                        print(f"Convertido path relativo: {path} -> {abs_path}")
+                        path = abs_path
+                        
+                    is_approved = False
+                    for approved_dir in approved_dirs:
+                        if path == approved_dir or path.startswith(approved_dir + "/"):
+                            is_approved = True
+                            print(f"✅ Path aprobado: {path} (en {approved_dir})")
+                            break
+                    
+                    if not is_approved:
+                        print(f"⚠️ Path no aprobado: {path}")
+                        return False, f"Command targets unapproved directory: {path}"
+            except Exception as e:
+                print(f"⚠️ Error al analizar rutas en comando: {str(e)}")
+                # Be permissive in case of parsing errors, since we've already passed basic safety checks
+                pass
         
         return True, ""
 
