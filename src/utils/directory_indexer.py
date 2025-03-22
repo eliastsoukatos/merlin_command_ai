@@ -2,14 +2,16 @@
 Directory Indexer Module
 
 This module handles the creation and management of directory indexes for the Merlin assistant.
-It scans the file system and creates a structured representation of the directories and files.
+It scans file system directories specified by the user and prepares them for semantic search.
 """
 
 import os
 import json
 import time
+import datetime
+import hashlib
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple, Any
 
 class DirectoryIndexer:
     """Class to manage directory indexing for Merlin assistant"""
@@ -17,216 +19,433 @@ class DirectoryIndexer:
     def __init__(self, config=None):
         """Initialize the directory indexer"""
         self.config = config or {}
-        self.root_dirs = self._get_default_directories()
-        self.index_data = {}
-        self.last_indexed = None
+        self.indexed_directories = {}
+        self.index_path = os.path.expanduser("~/.merlin/directory_index.json")
+        self.ensure_index_directory()
+        self.load_index()
     
-    def _get_default_directories(self) -> List[str]:
-        """Get default directories to index"""
-        home_dir = str(Path.home())
-        return [
-            home_dir,
-            os.path.join(home_dir, "Desktop"),
-            os.path.join(home_dir, "Documents"),
-            os.path.join(home_dir, "Downloads"),
-            os.path.join(home_dir, "Pictures"),
-            os.path.join(home_dir, "Music"),
-            os.path.join(home_dir, "Videos")
-        ]
+    def ensure_index_directory(self):
+        """Ensure the directory for the index file exists"""
+        index_dir = os.path.dirname(self.index_path)
+        os.makedirs(index_dir, exist_ok=True)
     
-    def add_directory(self, directory_path: str):
-        """Add a new directory to the index"""
-        if os.path.isdir(directory_path):
-            directory_path = os.path.abspath(directory_path)
-            if directory_path not in self.root_dirs:
-                self.root_dirs.append(directory_path)
-                return True
-        return False
-    
-    def build_index(self, max_depth: int = 3, file_extensions: Optional[List[str]] = None) -> Dict:
+    def index_directory(self, directory_path: str, max_depth: int = 3) -> Dict:
         """
-        Build an index of directories and files
+        Index a specific directory and its contents
         
         Args:
-            max_depth: Maximum depth to index
-            file_extensions: Optional list of file extensions to include (e.g., ['.txt', '.pdf'])
-            
-        Returns:
-            Dictionary with the directory index
-        """
-        start_time = time.time()
-        index = {
-            "directories": {},
-            "metadata": {
-                "indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "root_directories": self.root_dirs,
-                "max_depth": max_depth
-            }
-        }
-        
-        for root_dir in self.root_dirs:
-            if os.path.isdir(root_dir):
-                index["directories"][root_dir] = self._index_directory(
-                    root_dir, 
-                    max_depth=max_depth,
-                    current_depth=0,
-                    file_extensions=file_extensions
-                )
-        
-        index["metadata"]["elapsed_time"] = time.time() - start_time
-        self.index_data = index
-        self.last_indexed = time.time()
-        
-        return index
-    
-    def _index_directory(
-        self, 
-        directory: str, 
-        max_depth: int = 3, 
-        current_depth: int = 0,
-        file_extensions: Optional[List[str]] = None
-    ) -> Dict:
-        """
-        Recursively index a directory
-        
-        Args:
-            directory: Directory path to index
+            directory_path: Path to the directory to index
             max_depth: Maximum depth to traverse
-            current_depth: Current depth in the traversal
-            file_extensions: Optional list of file extensions to include
             
         Returns:
-            Dictionary with directory structure
+            Directory index information
         """
-        if current_depth > max_depth:
-            return {"summary": f"Max depth reached ({max_depth})"}
+        if not os.path.isdir(directory_path):
+            return {"error": f"Directory not found: {directory_path}"}
         
-        result = {
-            "path": directory,
-            "name": os.path.basename(directory),
-            "subdirectories": {},
-            "files": []
+        # Get absolute path
+        directory_path = os.path.abspath(directory_path)
+        
+        start_time = time.time()
+        
+        # Create index data structure
+        index_data = {
+            "path": directory_path,
+            "last_indexed": datetime.datetime.now().isoformat(),
+            "files": [],
+            "directories": []
         }
         
-        try:
-            entries = list(os.scandir(directory))
-            
-            # Add subdirectories
-            subdirs = [entry for entry in entries if entry.is_dir()]
-            for subdir in subdirs:
-                # Skip hidden directories
-                if subdir.name.startswith('.'):
-                    continue
-                    
-                subdir_path = os.path.join(directory, subdir.name)
-                result["subdirectories"][subdir.name] = self._index_directory(
-                    subdir_path, 
-                    max_depth=max_depth,
-                    current_depth=current_depth + 1,
-                    file_extensions=file_extensions
-                )
-            
-            # Add files
-            files = [entry for entry in entries if entry.is_file()]
-            for file_entry in files:
-                # Skip hidden files
-                if file_entry.name.startswith('.'):
-                    continue
-                    
-                # Check file extension if filter is provided
-                if file_extensions:
-                    ext = os.path.splitext(file_entry.name)[1].lower()
-                    if ext not in file_extensions:
-                        continue
-                
-                stat = file_entry.stat()
-                result["files"].append({
-                    "name": file_entry.name,
-                    "path": os.path.join(directory, file_entry.name),
-                    "size": stat.st_size,
-                    "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
-                    "extension": os.path.splitext(file_entry.name)[1].lower()
-                })
-            
-        except (PermissionError, OSError) as e:
-            result["error"] = str(e)
+        # Track statistics
+        stats = {
+            "total_files": 0,
+            "total_dirs": 0,
+            "skipped_files": 0,
+            "indexed_files": 0,
+            "total_size": 0
+        }
         
-        return result
+        # Walk the directory
+        for root, dirs, files in os.walk(directory_path):
+            # Calculate current depth
+            relative_path = os.path.relpath(root, directory_path)
+            current_depth = 0 if relative_path == '.' else relative_path.count(os.sep) + 1
+            
+            # Skip if beyond max depth
+            if current_depth > max_depth:
+                continue
+            
+            # Add current directory to index
+            rel_dir_path = os.path.relpath(root, directory_path)
+            dir_info = {
+                "path": root,
+                "relative_path": rel_dir_path if rel_dir_path != '.' else '',
+                "name": os.path.basename(root),
+                "depth": current_depth
+            }
+            index_data["directories"].append(dir_info)
+            stats["total_dirs"] += 1
+            
+            # Skip hidden directories for future traversal
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            
+            # Process files in current directory
+            for filename in files:
+                # Skip hidden files
+                if filename.startswith('.'):
+                    stats["skipped_files"] += 1
+                    continue
+                
+                file_path = os.path.join(root, filename)
+                
+                try:
+                    # Get file stats
+                    file_stat = os.stat(file_path)
+                    file_size = file_stat.st_size
+                    stats["total_size"] += file_size
+                    stats["total_files"] += 1
+                    
+                    # Check if file is too large (>10MB)
+                    if file_size > 10 * 1024 * 1024:
+                        stats["skipped_files"] += 1
+                        continue
+                    
+                    # Create file info
+                    file_info = {
+                        "path": file_path,
+                        "relative_path": os.path.relpath(file_path, directory_path),
+                        "name": filename,
+                        "extension": os.path.splitext(filename)[1].lower(),
+                        "size": file_size,
+                        "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                        "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).isoformat(),
+                        "category": self._categorize_file(filename)
+                    }
+                    
+                    # Add to index
+                    index_data["files"].append(file_info)
+                    stats["indexed_files"] += 1
+                    
+                except (PermissionError, OSError, FileNotFoundError) as e:
+                    stats["skipped_files"] += 1
+                    continue
+        
+        # Add statistics to index
+        index_data["stats"] = stats
+        index_data["elapsed_time"] = time.time() - start_time
+        
+        # Update the indexed directories
+        self.indexed_directories[directory_path] = index_data
+        
+        # Save the updated index
+        self.save_index()
+        
+        return index_data
     
-    def save_index(self, output_path: str) -> bool:
+    def save_index(self) -> bool:
         """
         Save the index to a JSON file
         
-        Args:
-            output_path: Path to save the index
-            
         Returns:
             True if successful, False otherwise
         """
-        if not self.index_data:
+        if not self.indexed_directories:
             return False
             
         try:
-            with open(output_path, 'w') as f:
-                json.dump(self.index_data, f, indent=2)
+            index_data = {
+                "indexed_directories": self.indexed_directories,
+                "last_saved": datetime.datetime.now().isoformat()
+            }
+            
+            with open(self.index_path, 'w') as f:
+                json.dump(index_data, f, indent=2)
             return True
         except Exception as e:
             print(f"Error saving index: {e}")
             return False
     
-    def load_index(self, input_path: str) -> bool:
+    def load_index(self) -> bool:
         """
-        Load an index from a JSON file
+        Load the index from a JSON file
         
-        Args:
-            input_path: Path to load the index from
-            
         Returns:
             True if successful, False otherwise
         """
+        if not os.path.exists(self.index_path):
+            return False
+            
         try:
-            with open(input_path, 'r') as f:
-                self.index_data = json.load(f)
-            self.last_indexed = os.path.getmtime(input_path)
+            with open(self.index_path, 'r') as f:
+                index_data = json.load(f)
+                
+            self.indexed_directories = index_data.get("indexed_directories", {})
             return True
         except Exception as e:
             print(f"Error loading index: {e}")
             return False
     
+    def get_indexed_directories(self) -> List[str]:
+        """
+        Get a list of indexed directories
+        
+        Returns:
+            List of directory paths
+        """
+        return list(self.indexed_directories.keys())
+    
+    def get_directory_index(self, directory_path: str) -> Optional[Dict]:
+        """
+        Get the index for a specific directory
+        
+        Args:
+            directory_path: Path to the directory
+            
+        Returns:
+            Directory index or None if not found
+        """
+        directory_path = os.path.abspath(directory_path)
+        return self.indexed_directories.get(directory_path)
+    
+    def remove_directory_index(self, directory_path: str) -> bool:
+        """
+        Remove a directory from the index
+        
+        Args:
+            directory_path: Path to the directory
+            
+        Returns:
+            True if removed, False if not found
+        """
+        directory_path = os.path.abspath(directory_path)
+        if directory_path in self.indexed_directories:
+            del self.indexed_directories[directory_path]
+            self.save_index()
+            return True
+        return False
+    
     def get_index_summary(self) -> Dict:
         """Get a summary of the current index"""
-        if not self.index_data:
-            return {"status": "No index available"}
+        if not self.indexed_directories:
+            return {"status": "No indexed directories"}
         
         total_dirs = 0
         total_files = 0
-        root_dirs = list(self.index_data.get("directories", {}).keys())
+        total_size = 0
         
-        # Count directories and files
-        for root_dir, content in self.index_data.get("directories", {}).items():
-            total_dirs += self._count_dirs(content)
-            total_files += self._count_files(content)
+        for dir_path, dir_data in self.indexed_directories.items():
+            total_dirs += dir_data.get("stats", {}).get("total_dirs", 0)
+            total_files += dir_data.get("stats", {}).get("indexed_files", 0)
+            total_size += dir_data.get("stats", {}).get("total_size", 0)
         
         return {
-            "indexed_at": self.index_data.get("metadata", {}).get("indexed_at", "Unknown"),
-            "root_directories": root_dirs,
+            "indexed_directories": len(self.indexed_directories),
             "total_directories": total_dirs,
-            "total_files": total_files
+            "total_files": total_files,
+            "total_size_bytes": total_size,
+            "total_size_mb": total_size / (1024 * 1024)
         }
     
-    def _count_dirs(self, dir_data: Dict) -> int:
-        """Count the number of directories in the index"""
-        count = 1  # Count this directory
-        for subdir_name, subdir_data in dir_data.get("subdirectories", {}).items():
-            count += self._count_dirs(subdir_data)
-        return count
+    def clear_index(self) -> bool:
+        """
+        Clear the entire index
+        
+        Returns:
+            True if successful
+        """
+        self.indexed_directories = {}
+        return self.save_index()
     
-    def _count_files(self, dir_data: Dict) -> int:
-        """Count the number of files in the index"""
-        count = len(dir_data.get("files", []))
-        for subdir_name, subdir_data in dir_data.get("subdirectories", {}).items():
-            count += self._count_files(subdir_data)
-        return count
+    def _categorize_file(self, filename: str) -> str:
+        """Categorize a file based on its extension"""
+        extension = os.path.splitext(filename)[1].lower()
+        
+        # Document files
+        if extension in ['.txt', '.pdf', '.doc', '.docx', '.odt', '.rtf', '.md', '.tex']:
+            return "document"
+            
+        # Image files
+        if extension in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.svg']:
+            return "image"
+            
+        # Audio files
+        if extension in ['.mp3', '.wav', '.flac', '.ogg', '.aac', '.m4a']:
+            return "audio"
+            
+        # Video files
+        if extension in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm']:
+            return "video"
+            
+        # Code files
+        if extension in ['.py', '.js', '.html', '.css', '.java', '.cpp', '.c', '.h', '.sh', '.rb']:
+            return "code"
+            
+        # Data files
+        if extension in ['.csv', '.json', '.xml', '.yaml', '.yml', '.sql', '.db']:
+            return "data"
+            
+        # Archive files
+        if extension in ['.zip', '.rar', '.tar', '.gz', '.7z']:
+            return "archive"
+            
+        # Executable files
+        if extension in ['.exe', '.app', '.deb', '.rpm', '.dmg', '.apk']:
+            return "executable"
+            
+        # Presentation files
+        if extension in ['.ppt', '.pptx', '.odp', '.key']:
+            return "presentation"
+            
+        # Spreadsheet files
+        if extension in ['.xls', '.xlsx', '.ods', '.csv']:
+            return "spreadsheet"
+            
+        return "other"
+    
+    def generate_jsonl_for_directory(self, directory_path: str, output_path: str) -> Dict:
+        """
+        Generate a JSONL file for a directory index suitable for OpenAI upload
+        
+        Args:
+            directory_path: Path to the indexed directory
+            output_path: Path to save the JSONL file
+            
+        Returns:
+            Result information
+        """
+        directory_path = os.path.abspath(directory_path)
+        directory_index = self.get_directory_index(directory_path)
+        
+        if not directory_index:
+            return {"error": f"Directory not indexed: {directory_path}"}
+        
+        try:
+            # Create chunks for the directory structure
+            chunks = self._create_directory_chunks(directory_index)
+            
+            # Write chunks to JSONL file
+            with open(output_path, 'w') as f:
+                for i, chunk in enumerate(chunks):
+                    # Each line is a JSON object
+                    line = {
+                        "id": f"chunk_{i}",
+                        "text": chunk["text"],
+                        "metadata": {
+                            "source": chunk["source"],
+                            "type": chunk["type"],
+                            "path": chunk["path"]
+                        }
+                    }
+                    f.write(json.dumps(line) + '\n')
+            
+            return {
+                "success": True,
+                "chunks_count": len(chunks),
+                "output_path": output_path
+            }
+                
+        except Exception as e:
+            return {"error": f"Failed to generate JSONL: {str(e)}"}
+    
+    def _create_directory_chunks(self, directory_index: Dict) -> List[Dict]:
+        """
+        Create text chunks from a directory index
+        
+        Args:
+            directory_index: Directory index data
+            
+        Returns:
+            List of chunks
+        """
+        chunks = []
+        
+        # Root directory chunk
+        root_path = directory_index["path"]
+        root_chunk = {
+            "text": f"Directory: {root_path}\n"
+                   f"Last indexed: {directory_index['last_indexed']}\n"
+                   f"Total files: {directory_index['stats']['indexed_files']}\n"
+                   f"Total directories: {directory_index['stats']['total_dirs']}\n\n"
+                   f"This is the root directory that contains all indexed files and subdirectories.",
+            "source": "directory_structure",
+            "type": "directory",
+            "path": root_path
+        }
+        chunks.append(root_chunk)
+        
+        # Directory chunks
+        for directory in directory_index["directories"]:
+            # Skip root directory (already added)
+            if directory["path"] == root_path:
+                continue
+                
+            dir_chunk = {
+                "text": f"Directory: {directory['path']}\n"
+                       f"Name: {directory['name']}\n"
+                       f"Relative path: {directory['relative_path']}\n"
+                       f"Depth: {directory['depth']}\n\n"
+                       f"This is a subdirectory within {root_path}.",
+                "source": "directory_structure",
+                "type": "directory",
+                "path": directory["path"]
+            }
+            chunks.append(dir_chunk)
+        
+        # Create file chunks by grouping similar files
+        file_groups = self._group_similar_files(directory_index["files"])
+        
+        for group_name, files in file_groups.items():
+            # Skip empty groups
+            if not files:
+                continue
+                
+            # Create a chunk for each group with up to 10 files
+            for i in range(0, len(files), 10):
+                group_files = files[i:i+10]
+                
+                file_list_text = "\n".join([
+                    f"- {file['name']} ({file['size']} bytes, modified: {file['modified']})"
+                    for file in group_files
+                ])
+                
+                file_paths_text = "\n".join([
+                    f"- {file['path']}"
+                    for file in group_files
+                ])
+                
+                group_chunk = {
+                    "text": f"File Group: {group_name} (Part {i//10 + 1})\n\n"
+                           f"Files in this group:\n{file_list_text}\n\n"
+                           f"Full paths:\n{file_paths_text}\n\n"
+                           f"These files are {group_name} files located in or under {root_path}.",
+                    "source": "file_group",
+                    "type": group_name,
+                    "path": root_path
+                }
+                chunks.append(group_chunk)
+        
+        return chunks
+    
+    def _group_similar_files(self, files: List[Dict]) -> Dict[str, List[Dict]]:
+        """
+        Group similar files together
+        
+        Args:
+            files: List of file information
+            
+        Returns:
+            Dictionary of file groups
+        """
+        groups = {}
+        
+        # Group by category
+        for file in files:
+            category = file["category"]
+            if category not in groups:
+                groups[category] = []
+            groups[category].append(file)
+        
+        return groups
 
-# Initialize a global instance
+# Initialize global instance
 directory_indexer = DirectoryIndexer()
