@@ -43,10 +43,16 @@ async def main():
     parser = argparse.ArgumentParser(description="Voice Assistant")
     parser.add_argument("--simulate", action="store_true", help="Run in simulation mode")
     parser.add_argument("--use-wake-word", action="store_true", help="Run with wake word detection (requires Picovoice)")
+    parser.add_argument("--multi-step", action="store_true", help="Enable multi-step reasoning for complex tasks")
     args = parser.parse_args()
 
     # Load configuration from .env file
     config = load_config()
+    
+    # Add multi-step reasoning to config
+    config['MULTI_STEP_REASONING'] = args.multi_step
+    if args.multi_step:
+        print("Multi-step reasoning enabled. Complex tasks will be processed in steps.")
 
     if args.simulate:
         # Simulation mode: use predefined questions instead of audio input

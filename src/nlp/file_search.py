@@ -2,7 +2,8 @@
 File Search Module
 
 This module integrates with OpenAI's file search capabilities for directory indexing and search.
-It manages vector stores, file uploads, and search operations.
+It manages vector stores, file uploads, and search operations, and provides specialized search
+functions for integration with the multi-step reasoning system.
 """
 
 import os
@@ -10,16 +11,20 @@ import json
 import tempfile
 import requests
 import datetime
+import re
 from io import BytesIO
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Tuple
 
 from openai import OpenAI
 from src.utils.directory_indexer import directory_indexer
+from src.core.reasoning import ReasoningStep
 
 class FileSearchManager:
     """
     Manages integration with OpenAI's file search capabilities.
     Handles vector store creation, file uploads, and semantic search.
+    Provides specialized search functions for integration with the
+    multi-step reasoning system.
     """
     
     def __init__(self, api_key: Optional[str] = None):
@@ -468,6 +473,280 @@ class FileSearchManager:
             
             # Remove duplicates
             return list(set(indexed_dirs))
+    
+    # --- New methods for integration with reasoning system ---
+    
+    def parse_search_results(self, results: Dict) -> Dict:
+        """
+        Parse search results into a structured format usable by the reasoning system
+        
+        Args:
+            results: Raw search results
+            
+        Returns:
+            Structured search results with additional metadata
+        """
+        parsed = {
+            "success": False,
+            "files": [],
+            "summary": {},
+            "raw_text": ""
+        }
+        
+        # Check if search was successful
+        if "error" in results:
+            parsed["error"] = results["error"]
+            return parsed
+        
+        # Extract raw text for context
+        if "response" in results and hasattr(results["response"], "text"):
+            parsed["raw_text"] = results["response"].text
+        
+        # Extract file information
+        files = []
+        text = parsed["raw_text"]
+        
+        # Parse the text to extract file information
+        file_entries = re.findall(r'(\d+)\.\s+([^\n]+)\s+\(([^\)]+)\)\s+Located\s+at:\s+([^\n]+)\s+Size:\s+(\d+)\s+bytes,\s+Modified:\s+([^\n]+)', text)
+        
+        for entry in file_entries:
+            files.append({
+                "name": entry[1].strip(),
+                "category": entry[2].strip(),
+                "path": entry[3].strip(),
+                "size": int(entry[4]),
+                "modified": entry[5].strip()
+            })
+        
+        parsed["files"] = files
+        parsed["success"] = True
+        
+        # Generate summary statistics
+        summary = {
+            "total_files": len(files),
+            "categories": {},
+            "extensions": {},
+            "newest_file": None,
+            "largest_file": None
+        }
+        
+        if files:
+            # Categorize files
+            for file in files:
+                # Count by category
+                category = file["category"]
+                if category not in summary["categories"]:
+                    summary["categories"][category] = 0
+                summary["categories"][category] += 1
+                
+                # Count by extension
+                ext = os.path.splitext(file["name"])[1].lower()
+                if ext not in summary["extensions"]:
+                    summary["extensions"][ext] = 0
+                summary["extensions"][ext] += 1
+                
+                # Track newest and largest file
+                if not summary["newest_file"] or file["modified"] > summary["newest_file"]["modified"]:
+                    summary["newest_file"] = file
+                
+                if not summary["largest_file"] or file["size"] > summary["largest_file"]["size"]:
+                    summary["largest_file"] = file
+        
+        parsed["summary"] = summary
+        return parsed
+    
+    def search_by_type(self, file_type: str, directory: Optional[str] = None, vector_store: str = "default") -> Dict:
+        """
+        Search for files by type/category
+        
+        Args:
+            file_type: Category of file to search for (e.g., "audio", "document", "image")
+            directory: Optional directory to limit search to
+            vector_store: Name of vector store to search
+            
+        Returns:
+            Search results
+        """
+        # Construct query based on file type
+        query = f"category:{file_type}"
+        if directory:
+            query += f" in:{directory}"
+        
+        # Perform search
+        results = self.search(query, vector_store)
+        
+        # Parse results
+        return self.parse_search_results(results)
+    
+    def search_by_extension(self, extension: str, directory: Optional[str] = None, vector_store: str = "default") -> Dict:
+        """
+        Search for files with a specific extension
+        
+        Args:
+            extension: File extension (e.g., ".pdf", ".mp3")
+            directory: Optional directory to limit search to
+            vector_store: Name of vector store to search
+            
+        Returns:
+            Search results
+        """
+        # Normalize extension
+        if not extension.startswith("."):
+            extension = f".{extension}"
+        
+        # Construct query
+        query = f"extension:{extension}"
+        if directory:
+            query += f" in:{directory}"
+        
+        # Perform search
+        results = self.search(query, vector_store)
+        
+        # Parse results
+        return self.parse_search_results(results)
+    
+    def search_by_name(self, name_pattern: str, directory: Optional[str] = None, vector_store: str = "default") -> Dict:
+        """
+        Search for files by name pattern
+        
+        Args:
+            name_pattern: Pattern to search for in filenames
+            directory: Optional directory to limit search to
+            vector_store: Name of vector store to search
+            
+        Returns:
+            Search results
+        """
+        # Construct query
+        query = f"name:{name_pattern}"
+        if directory:
+            query += f" in:{directory}"
+        
+        # Perform search
+        results = self.search(query, vector_store)
+        
+        # Parse results
+        return self.parse_search_results(results)
+    
+    def search_by_content(self, content_pattern: str, directory: Optional[str] = None, vector_store: str = "default") -> Dict:
+        """
+        Search for files by content (semantic search)
+        
+        Args:
+            content_pattern: Content to search for
+            directory: Optional directory to limit search to
+            vector_store: Name of vector store to search
+            
+        Returns:
+            Search results
+        """
+        # Construct query
+        query = f"content:{content_pattern}"
+        if directory:
+            query += f" in:{directory}"
+        
+        # Perform search
+        results = self.search(query, vector_store)
+        
+        # Parse results
+        return self.parse_search_results(results)
+    
+    def get_filtered_files(self, parsed_results: Dict, 
+                           filters: Optional[Dict] = None) -> List[Dict]:
+        """
+        Apply additional filters to parsed search results
+        
+        Args:
+            parsed_results: Parsed search results
+            filters: Additional filters to apply
+            
+        Returns:
+            List of files that match the filters
+        """
+        if not filters:
+            return parsed_results["files"]
+        
+        filtered_files = []
+        
+        for file in parsed_results["files"]:
+            include = True
+            
+            # Apply each filter
+            for key, value in filters.items():
+                if key == "min_size" and file.get("size", 0) < value:
+                    include = False
+                    break
+                elif key == "max_size" and file.get("size", 0) > value:
+                    include = False
+                    break
+                elif key == "category" and file.get("category", "") != value:
+                    include = False
+                    break
+                elif key == "extension":
+                    file_ext = os.path.splitext(file.get("name", ""))[1].lower()
+                    if file_ext != value.lower():
+                        include = False
+                        break
+            
+            if include:
+                filtered_files.append(file)
+        
+        return filtered_files
+    
+    def execute_search_step(self, step: ReasoningStep) -> Dict:
+        """
+        Execute a search step in the reasoning process
+        
+        Args:
+            step: A reasoning step containing search parameters
+            
+        Returns:
+            Search results formatted for reasoning system
+        """
+        step_args = step.tool_args
+        search_type = step_args.get("search_type", "general")
+        
+        if search_type == "by_type":
+            results = self.search_by_type(
+                file_type=step_args.get("file_type", ""),
+                directory=step_args.get("directory"),
+                vector_store=step_args.get("vector_store", "default")
+            )
+        elif search_type == "by_extension":
+            results = self.search_by_extension(
+                extension=step_args.get("extension", ""),
+                directory=step_args.get("directory"),
+                vector_store=step_args.get("vector_store", "default")
+            )
+        elif search_type == "by_name":
+            results = self.search_by_name(
+                name_pattern=step_args.get("name_pattern", ""),
+                directory=step_args.get("directory"),
+                vector_store=step_args.get("vector_store", "default")
+            )
+        elif search_type == "by_content":
+            results = self.search_by_content(
+                content_pattern=step_args.get("content_pattern", ""),
+                directory=step_args.get("directory"),
+                vector_store=step_args.get("vector_store", "default")
+            )
+        else:
+            # Default to general search
+            results = self.search(
+                query=step_args.get("query", ""),
+                vector_store_name=step_args.get("vector_store", "default"),
+                max_results=step_args.get("max_results", 5)
+            )
+            results = self.parse_search_results(results)
+        
+        # Apply any additional filters
+        filters = step_args.get("filters")
+        if filters and results["success"]:
+            filtered_files = self.get_filtered_files(results, filters)
+            results["filtered_files"] = filtered_files
+            results["filtered_count"] = len(filtered_files)
+        
+        return results
 
 # Initialize global instance
 file_search_manager = FileSearchManager()
