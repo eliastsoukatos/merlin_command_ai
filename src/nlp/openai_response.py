@@ -2,8 +2,8 @@ import os
 import json
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from command_executor import execute_commands, execute_background_command
-from directory_manager import directory_manager
+from src.commands.command_executor import execute_commands, execute_background_command
+from src.utils.directory_manager import directory_manager
 
 load_dotenv()
 
